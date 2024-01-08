@@ -1,0 +1,3 @@
+[workspace]
+members = ["rgo", "rgo-server"]
+resolver = "2"
