@@ -10,16 +10,16 @@ use tokio::fs::read;
 
 #[derive(Debug, Deserialize)]
 enum Command {
-    Add{key: String, value: String},
-    Remove{key: String},
+    Add { key: String, value: String },
+    Remove { key: String },
     List,
 }
 
 #[tokio::main]
 async fn main() {
     setup_pipe();
-    read_from_pipe_in_background().await;
     let state = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+    read_from_pipe_in_background(state.clone()).await;
     state
         .lock()
         .unwrap()
@@ -41,7 +41,10 @@ async fn redirect(
     Path(key): Path<String>,
     Extension(state): Extension<Arc<Mutex<HashMap<String, String>>>>,
 ) -> Redirect {
-    Redirect::to(state.lock().unwrap().get(&key).unwrap())
+    match state.lock().unwrap().get(&key) {
+        Some(x) => Redirect::to(x),
+        None => Redirect::to("/404"),
+    }
 }
 
 fn setup_pipe() {
@@ -55,15 +58,25 @@ fn setup_pipe() {
     }
 }
 
-async fn read_from_pipe_in_background() {
+fn execute_command(command: Command, state: Arc<Mutex<HashMap<String, String>>>) {
+    match command {
+        Command::Add { key, value } => state.lock().unwrap().insert(key, value),
+        Command::Remove { key } => state.lock().unwrap().remove(&key),
+        Command::List => Option::None,
+    };
+}
+
+async fn read_from_pipe_in_background(state: Arc<Mutex<HashMap<String, String>>>) {
     tokio::spawn(async move {
         loop {
+            println!("{:?}", state);
             println!("Reading");
             let command = read("/tmp/rgo.pipe").await;
             match command {
                 Ok(command) => {
                     let unpacked: Command = rmp_serde::from_slice(&command).unwrap();
                     println!("Command: {:?}", unpacked);
+                    execute_command(unpacked, state.clone())
                 }
                 Err(e) => println!("Error reading from pipe: {}", e),
             }
