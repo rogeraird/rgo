@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use axum::{extract::Path, response::Redirect, routing::get, Extension, Router};
+use axum::{extract::Path, response::Redirect, routing::get, Extension, Router, Json};
 use nix::{sys::stat, unistd};
 use serde::Deserialize;
 use tokio::fs::read;
@@ -12,7 +12,7 @@ use tokio::fs::read;
 enum Command {
     Add { key: String, value: String },
     Remove { key: String },
-    List,
+    Persist,
 }
 
 #[tokio::main]
@@ -26,6 +26,7 @@ async fn main() {
         .insert("google".to_string(), "https://google.com".to_string());
 
     let app = Router::new()
+        .route("/priv/list", get(list))
         .route("/:key", get(redirect))
         .layer(Extension(state));
 
@@ -47,6 +48,13 @@ async fn redirect(
     }
 }
 
+async fn list(
+    Extension(state): Extension<Arc<Mutex<HashMap<String, String>>>>,
+) -> Json<HashMap<String, String>> {
+    Json(state.lock().unwrap().clone())
+}
+
+
 fn setup_pipe() {
     if !std::path::Path::new("/tmp/rgo.pipe").exists() {
         match unistd::mkfifo("/tmp/rgo.pipe", stat::Mode::S_IRWXU) {
@@ -58,11 +66,18 @@ fn setup_pipe() {
     }
 }
 
-fn execute_command(command: Command, state: Arc<Mutex<HashMap<String, String>>>) {
+async fn execute_command(command: Command, state: Arc<Mutex<HashMap<String, String>>>) {
     match command {
         Command::Add { key, value } => state.lock().unwrap().insert(key, value),
         Command::Remove { key } => state.lock().unwrap().remove(&key),
-        Command::List => Option::None,
+        Command::Persist => {
+            println!("Persisting");
+            let serialized = rmp_serde::to_vec(&*state.lock().unwrap()).unwrap();
+            match tokio::fs::write("/tmp/rgo-client", serialized).await {
+                Ok(_) => {println!("Persisted"); Some("Written".to_string())},
+                Err(e) => {println!("Error persisting: {}", e); None},
+            }
+        }
     };
 }
 
@@ -76,7 +91,7 @@ async fn read_from_pipe_in_background(state: Arc<Mutex<HashMap<String, String>>>
                 Ok(command) => {
                     let unpacked: Command = rmp_serde::from_slice(&command).unwrap();
                     println!("Command: {:?}", unpacked);
-                    execute_command(unpacked, state.clone())
+                    execute_command(unpacked, state.clone()).await;
                 }
                 Err(e) => println!("Error reading from pipe: {}", e),
             }
